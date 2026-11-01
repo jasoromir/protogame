@@ -242,6 +242,7 @@ export class WorldScene {
       <div class="wbtns">
         <button data-a="team" title="Team, collection and trainer cards (T)">Team <small>T</small></button>
         <button data-a="codex" title="Creature Codex (C)">Codex <small>C</small></button>
+        <button data-a="versus" class="vs" title="Battle a friend online (V)">Versus <small>V</small></button>
         <button data-a="howto">How to play</button>
         <button data-a="title">Title</button>
       </div>
@@ -253,6 +254,7 @@ export class WorldScene {
     this.hudEl = el;
     el.querySelector('[data-a="team"]').onclick = () => this.app.openTeam();
     el.querySelector('[data-a="codex"]').onclick = () => this.app.openCodex();
+    el.querySelector('[data-a="versus"]').onclick = () => this.app.openVersus();
     el.querySelector('[data-a="howto"]').onclick = () => this.app.openHowTo();
     el.querySelector('[data-a="title"]').onclick = () => this.app.toTitle();
     this.mini = el.querySelector('.minimap').getContext('2d');
@@ -290,6 +292,7 @@ export class WorldScene {
     if (k === 'e' && this.nearGym) this._enterGym(this.nearGym);
     if (k === 't') this.app.openTeam();
     if (k === 'c') this.app.openCodex();
+    if (k === 'v') this.app.openVersus();
   }
   _click(e) {
     if (this.busy || e.button !== 0) return;

@@ -133,11 +133,26 @@ export class Battle {
 
   _addUnit(def, team, pos) {
     const u = new Unit(def, team, pos, this.hpScale);
+    u.uid = this.units.length + 1;   // per-battle ids: both machines in a versus match get the same card keys
     this.units.push(u); this.occ.set(hex.key(pos), u);
     return u;
   }
 
   emit(e) { e.t = this.t; this.events.push(e); }
+  /** Move a team to new start tiles before the fight (deploy). `spots[i]` belongs to the team's i-th unit. */
+  placeTeam(team, spots) {
+    const mine = this.units.filter((u) => u.team === team);
+    for (const u of mine) this.occ.delete(hex.key(u.pos));
+    mine.forEach((u, i) => { u.pos = spots[i]; u.startPos = spots[i]; this.occ.set(hex.key(spots[i]), u); });
+  }
+  /** Compact fingerprint of the battle state (versus matches compare these to catch desyncs). */
+  hash() {
+    let h = 2166136261 >>> 0;
+    const mix = (n) => { h = Math.imul(h ^ (n | 0), 16777619) >>> 0; };
+    mix(Math.round(this.t * 10)); mix(Math.round(this.energy[0] * 1000)); mix(Math.round(this.energy[1] * 1000));
+    for (const u of this.units) { mix(Math.round(u.hp * 100)); mix(u.pos[0] * 16 + u.pos[1]); mix(u.alive ? 1 : 0); }
+    return h;
+  }
   hasDuo(team, id) { return this.duos[team].has(id); }
   drainEvents() { const e = this.events; this.events = []; return e; }
 

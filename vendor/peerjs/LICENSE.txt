@@ -1,0 +1,2 @@
+PeerJS 1.5.4 (https://github.com/peers/peerjs), MIT license, Copyright (c) 2015 Michelle Bu and Eric Zhang, http://peerjs.com
+Used for browser-to-browser versus matches (js/net/link.js).

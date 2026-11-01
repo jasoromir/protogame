@@ -5,6 +5,7 @@ import { PortraitStudio } from './render/portraits.js';
 import { BattleScene } from './game/battle.js';
 import { Diorama, titleScreen, resultsScreen, boonScreen, teamScreen, codexScreen, howToPlay } from './ui/screens.js';
 import { WorldScene } from './world/world.js';
+import { Versus } from './net/versus.js';
 import { MAPS } from './sim/maps.js';
 import { SmartPolicy, EagerPolicy } from './sim/policies.js';
 import { BOONS, offerBoons } from './sim/synergies.js';
@@ -49,6 +50,7 @@ class App {
   openTeam() { this._overWorld(); teamScreen(this, null); }
   openCodex() { this._overWorld(); codexScreen(this); }
   openHowTo() { this._overWorld(); howToPlay(this, () => this.showMap()); }
+  openVersus() { if (!this.versus) this.versus = new Versus(this); this.versus.open(); }
   prepareBattle(gym) { this._overWorld(); teamScreen(this, gym); }
   toTitle() {
     if (this.world) { this.world.dispose(); this.world = null; }

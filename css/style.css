@@ -425,3 +425,37 @@ table.stats td.tot span { position: relative; }
 .wlabel small { color: #ffe08a; font-weight: normal; }
 .wlabel.gym { font-size: 15px; color: #f4e6c0; padding: 3px 10px; border-radius: 8px; background: rgba(14, 15, 24, .7); border: 1px solid #8a744588; }
 .wlabel.wild.alert::before { content: '❗ '; }
+
+/* ---------- Versus (online) ---------- */
+.whud .wbtns button.vs { border-color: rgba(255, 201, 74, .6); background: linear-gradient(180deg, #4a3a1c, #2c2416); }
+.versus .panel { width: min(760px, 94vw); max-height: 90vh; overflow: auto; }
+.versus h2 { margin: 0 0 8px; letter-spacing: .08em; }
+.versus h3 { margin: 0 0 6px; }
+.vs-name { display: flex; gap: 10px; align-items: center; margin: 10px 0 14px; color: var(--muted); }
+.versus input, .versus select { font: inherit; color: var(--text); background: #1b1826; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+.vs-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.vs-box { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: rgba(255,255,255,.03); }
+.vs-box p { color: var(--muted); margin: 0 0 12px; font-size: 14px; }
+.vs-join { display: flex; gap: 8px; }
+.vs-join .code { width: 140px; text-transform: uppercase; letter-spacing: .2em; font-weight: bold; }
+.vs-code { font-size: 44px; font-weight: bold; letter-spacing: .25em; color: var(--gold); text-align: center; padding: 14px; margin: 8px 0 10px;
+  border: 2px dashed rgba(255, 201, 74, .5); border-radius: 12px; user-select: all; }
+.vs-small { color: var(--muted); font-size: 13px; }
+.vs-small a { color: var(--blue); }
+.vs-status { color: var(--gold); }
+.vs-teams { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: start; }
+.vs-mid { align-self: center; font-size: 30px; font-weight: bold; color: var(--gold); text-shadow: 0 0 12px rgba(255,180,60,.6); }
+.vs-side { border-radius: 12px; padding: 10px; border: 1px solid var(--line); }
+.vs-side.me { background: rgba(74, 176, 255, .08); border-color: rgba(74, 176, 255, .35); }
+.vs-side.foe { background: rgba(255, 90, 74, .08); border-color: rgba(255, 90, 74, .35); }
+.vs-mon { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-left: 3px solid var(--el); margin: 4px 0; background: rgba(0,0,0,.2); border-radius: 6px; }
+.vs-mon img { width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,.3); }
+.vs-mon small { margin-left: auto; color: var(--muted); }
+.vs-mon.dim { opacity: .35; }
+.vs-opts { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 12px; }
+.vs-opts .primary { margin-left: auto; }
+.vs-wait { margin-left: auto; color: var(--gold); animation: vsPulse 1.4s ease-in-out infinite; }
+@keyframes vsPulse { 50% { opacity: .45; } }
+.vs-foot { display: flex; justify-content: flex-end; margin-top: 14px; }
+.deploy-banner .fight:disabled { opacity: .8; cursor: default; filter: saturate(.5); }
+@media (max-width: 640px) { .vs-choice, .vs-teams { grid-template-columns: 1fr; } .vs-mid { justify-self: center; } }

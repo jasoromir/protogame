@@ -14,31 +14,35 @@ export function tileAt([x, z]) {
   let best = null, bd = Infinity;
   for (const p of hex.ALL) {
     const [tx, tz] = tileXZ(p);
-    const d = (tx - x) ** 2 + (tz - z) ** 2;
+    const d = (tx - x) * (tx - x) + (tz - z) * (tz - z);
     if (d < bd) { bd = d; best = p; }
   }
-  return bd <= (HEX_R * 1.05) ** 2 ? best : null;
+  return bd <= HEX_R * 1.05 * (HEX_R * 1.05) ? best : null;
 }
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
-const len = (v) => Math.hypot(v[0], v[1]);
+// sqrt (not hypot/acos/pow): IEEE-exact in every browser, so versus matches stay in lockstep
+const len = (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1]);
 
 /** Radius in world units for an area of `r` hex rings (covers the outer ring's centers). */
 export const ringRadius = (r) => r * HEX_W + HEX_R * 0.8;
 
 export function tilesInCircle(center, r) { return hex.within(center, r); }
 
+// cos(angle/2 + 0.12 rad) for the cone angles in use, written out so no trig runs inside the sim
+const COS_HALF = { 70: 0.7445971224029637 };
+
 /** Cone from `origin` (tile) toward ground point `toward`: tiles whose centers fall inside. */
 export function tilesInCone(origin, toward, range, angleDeg) {
   const o = tileXZ(origin), dir = sub(toward, o);
   const dl = len(dir) || 1;
-  const reach = range * HEX_W + HEX_R * 0.6, half = (angleDeg / 2) * (Math.PI / 180);
+  const reach = range * HEX_W + HEX_R * 0.6, coneCos = COS_HALF[angleDeg] ?? Math.cos((angleDeg / 2) * (Math.PI / 180) + 0.12);
   return hex.ALL.filter((p) => {
     if (hex.same(p, origin)) return false;
     const v = sub(tileXZ(p), o), d = len(v);
     if (d > reach) return false;
     const cos = (v[0] * dir[0] + v[1] * dir[1]) / (d * dl);
-    return Math.acos(Math.max(-1, Math.min(1, cos))) <= half + 0.12;
+    return cos >= coneCos;
   });
 }
 

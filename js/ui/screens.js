@@ -87,6 +87,7 @@ export function howToPlay(app, back = () => (app.inGame ? app.showMap() : titleS
       <li><b>Overtime:</b> after 70s damage keeps rising and healing is halved, so fights always end.</li>
       <li><b>Wild creatures:</b> weaken one below 30% HP and hit it with the <b>Capture</b> card to add it to your collection.</li>
       <li><b>Auto</b> button: an AI plays your cards for you. Space pauses.</li>
+      <li><b>Versus</b> (V in the world): fight a friend online. One of you hosts and sends the code, the other joins. Both press Ready after deploying; there is no pause.</li>
     </ul>
     <button class="primary">Got it</button></div></div>`);
   el.querySelector('button').onclick = back;

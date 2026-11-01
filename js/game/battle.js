@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { Battle, DT, ENERGY_CAP, OVERTIME_AT, COMBOS } from '../sim/engine.js';
 import { CARDS, cardTiles } from '../sim/cards.js';
 import { AutoSpecials } from '../sim/policies.js';
+import { INPUT_DELAY } from '../net/lockstep.js';
 import { DUOS, BOONS } from '../sim/synergies.js';
 import * as hex from '../sim/hex.js';
 import * as G from '../sim/geom.js';
@@ -26,7 +27,7 @@ const KEYS = ['1', '2', '3', '4'];
 
 export class BattleScene {
   constructor(app, { playerDefs, enemyDefs, map, trainerCards = [], enemyTrainer = [], enemyPolicy, title, subtitle = '',
-    boonsA = [], boonsB = [], posA = null, wild = false, onEnd }) {
+    boonsA = [], boonsB = [], posA = null, wild = false, pvp = null, onEnd }) {
     this.app = app;
     this.stage = app.stage;
     this.onEnd = onEnd;
@@ -35,15 +36,23 @@ export class BattleScene {
     this.map = map;
     this.boonsA = boonsA;
     this.overlay = app.overlay;
+    // versus: pvp = {me, lockstep, link, seed, teamA, teamB, trainerA, trainerB, foeName}
+    this.pvp = pvp;
+    this.me = pvp ? pvp.me : 0;
+    this.foe = 1 - this.me;
+    this.net = pvp ? pvp.lockstep : null;
     this.stage.setMap(map);
-    this.stage.setBattleCamera();
+    this.stage.setBattleCamera(this.me === 1);
     this.fx = new FX(this.stage, this.overlay);
-    this.speed = app.save.settings.speed || 1;
-    this.battle = new Battle({ teamA: playerDefs, teamB: enemyDefs, map, policyA: null, policyB: enemyPolicy, hpScale: 5,
-      seed: (Math.random() * 1e9) | 0, posA, boonsA, boonsB, wild,
-      trainerA: [...trainerCards, ...(wild ? ['capture'] : [])], trainerB: enemyTrainer });
-    if (app.save.settings.autoSpecials) this.battle.policies[0] = new AutoSpecials();
-    this.ctx = { stage: this.stage, fx: this.fx, assets: app.assets, overlay: this.overlay, views: new Map() };
+    this.speed = pvp ? 1 : app.save.settings.speed || 1;
+    this.battle = pvp
+      ? new Battle({ teamA: pvp.teamA, teamB: pvp.teamB, map, policyA: null, policyB: null, hpScale: 5, seed: pvp.seed,
+          posA: this.me === 0 ? posA : null, trainerA: pvp.trainerA, trainerB: pvp.trainerB })
+      : new Battle({ teamA: playerDefs, teamB: enemyDefs, map, policyA: null, policyB: enemyPolicy, hpScale: 5,
+          seed: (Math.random() * 1e9) | 0, posA, boonsA, boonsB, wild,
+          trainerA: [...trainerCards, ...(wild ? ['capture'] : [])], trainerB: enemyTrainer });
+    if (!pvp && app.save.settings.autoSpecials) this.battle.policies[0] = new AutoSpecials();
+    this.ctx = { stage: this.stage, fx: this.fx, assets: app.assets, overlay: this.overlay, views: new Map(), me: this.me };
     for (const u of this.battle.units) this.ctx.views.set(u.uid, new UnitView(this.ctx, u));
     this.phase = 'deploy';
     this.acc = 0;
@@ -65,8 +74,20 @@ export class BattleScene {
     this.stage.canvas.addEventListener('contextmenu', this._handlers.ctx);
     this.stage.onFrame = (dt) => this._frame(dt);
     this._refreshMarks();
+    if (pvp) {
+      this.foeReady = null;
+      this._offMsg = pvp.link.onMessage((m) => { if (m.type === 'ready') this._foeReady(m); });
+      this._offClose = pvp.link.onClose(() => this._disconnected());
+    }
   }
-
+  /** A deploy zone row for the viewer's team. */
+  _mine(p) { return this.me === 0 ? p[1] <= 3 : p[1] >= 4; }
+  /** Send a card (or auto toggle) to the battle: directly, or through lockstep in a versus match. */
+  _play(action) {
+    if (this.net) return this.net.schedule(action);
+    this.battle.request(this.me, action);
+    return null;
+  }
   view(u) { return this.ctx.views.get(u.uid); }
   head(u) { const v = this.view(u); return v.root.position.clone().add(new THREE.Vector3(0, v.height * 0.6, 0)); }
   portrait(u) { return this.app.portraits ? this.app.portraits.portrait(u.name, u.line) : ''; }
@@ -82,7 +103,7 @@ export class BattleScene {
       <div class="traits"></div>
       <div class="rosters"><h5>Opponent</h5><div class="roster enemy"></div><h5>Your team</h5><div class="roster mine"></div></div>
       <div class="deploy-banner"><b>Deploy</b><span><b>Drag</b> your creatures onto the blue tiles (drop on another creature to swap).
-        Hover tiles and creatures to learn what they do.</span><button class="fight">Fight! <small>Space</small></button></div>
+        Hover tiles and creatures to learn what they do.</span><button class="fight">${this.pvp ? "Ready!" : "Fight!"} <small>Space</small></button></div>
       <div class="feed"></div>
       <div class="cardbar">
         <div class="next" data-tip="The card that enters your hand next. Cards rotate: a played card goes to the back of the line.">
@@ -92,8 +113,8 @@ export class BattleScene {
           <div class="gem"><b>0</b></div><div class="ebar">${'<i><u></u></i>'.repeat(ENERGY_CAP)}</div></div>
       </div>
       <div class="controls">
-        <button data-speed="1" data-tip="Normal speed">1×</button><button data-speed="2" data-tip="Double speed">2×</button>
-        <button class="pause" data-tip="Pause (Space)">❚❚</button>
+        ${this.pvp ? '' : `<button data-speed="1" data-tip="Normal speed">1×</button><button data-speed="2" data-tip="Double speed">2×</button>
+        <button class="pause" data-tip="Pause (Space)">❚❚</button>`}
         <button class="auto" data-tip="Auto-cast: an AI plays your cards for you, aiming them smartly. Good for learning; turn it off to play yourself.">Auto</button>
       </div>
       <div class="tooltip"></div><div class="hint"></div><div class="banner"></div>`;
@@ -103,13 +124,14 @@ export class BattleScene {
     this.dom = { phase: q('.pl-phase'), clock: q('.pl-clock'), event: q('.pl-event'), hand: q('.hand'), next: q('.next-card'),
       gem: q('.gem b'), segs: [...el.querySelectorAll('.ebar i')], tip: q('.tooltip'), hint: q('.hint'), banner: q('.banner'), feed: q('.feed') };
     el.querySelectorAll('[data-speed]').forEach((btn) => btn.addEventListener('click', () => this._setSpeed(+btn.dataset.speed)));
-    q('.pause').addEventListener('click', () => this._togglePause());
+    q('.pause')?.addEventListener('click', () => this._togglePause());
     const auto = q('.auto');
     auto.classList.toggle('on', !!this.app.save.settings.autoSpecials);
     auto.addEventListener('click', () => {
       const on = !this.app.save.settings.autoSpecials;
       this.app.save.settings.autoSpecials = on; this.app.persist();
-      b.policies[0] = on ? new AutoSpecials() : null;
+      if (this.net) { if (this.phase === 'fight') this._play({ kind: 'auto', on }); }
+      else b.policies[0] = on ? new AutoSpecials() : null;
       auto.classList.toggle('on', on);
     });
     q('.fight').addEventListener('click', () => this._start());
@@ -127,12 +149,12 @@ export class BattleScene {
 
   _buildTraits() {
     const b = this.battle, rows = [];
-    for (const [e, n] of Object.entries(b.elemCount[0])) {
+    for (const [e, n] of Object.entries(b.elemCount[this.me])) {
       const tier = n >= 3 ? 2 : n >= 2 ? 1 : 0;
       const tip = `${ELEMENTS[e].name} ${n}: (2) its statuses last 50% longer · (3) its combos deal +25%`;
       rows.push(`<div class="trait t${tier}" data-tip="${tip}">${elementIcon(e, { size: 34, dim: tier === 0 })}<div><b>${ELEMENTS[e].name}</b><span>${n} / ${n >= 2 ? 3 : 2}</span></div></div>`);
     }
-    for (const d of DUOS) if (b.hasDuo(0, d.id)) {
+    for (const d of DUOS) if (b.hasDuo(this.me, d.id)) {
       rows.push(`<div class="trait t2 duo" data-tip="Duo · ${d.pair.join(' + ')}: ${d.desc}">${emblem('duo', 'duo', { size: 34, shape: 'hex' })}<div><b>${d.name}</b><span>Duo</span></div></div>`);
     }
     for (const id of this.boonsA) {
@@ -144,11 +166,11 @@ export class BattleScene {
 
   _buildRosters() {
     this.rosterRows = [];
-    for (const [team, sel] of [[1, '.roster.enemy'], [0, '.roster.mine']]) {
+    for (const [team, sel] of [[this.foe, '.roster.enemy'], [this.me, '.roster.mine']]) {
       const box = this.hud.querySelector(sel);
       for (const u of this.battle.units.filter((x) => x.team === team)) {
         const d = document.createElement('div');
-        d.className = `rrow team${team}`;
+        d.className = `rrow team${team === this.me ? 0 : 1}`;
         d.style.setProperty('--el', ELEMENTS[u.elements[0]].color);
         d.innerHTML = `<img src="${this.portrait(u)}" alt=""><div class="rinfo"><b>${u.name}</b><small>Lv ${u.def.level} · ${u.role}</small>
           <div class="rhp"><i></i></div></div>`;
@@ -177,7 +199,7 @@ export class BattleScene {
   _unitTip(u) {
     const sts = STATUS_ICONS.filter(([st]) => this.battle.has(u, st)).map(([st, i]) => `${i} ${STATUS_TIP[st] || st}`).join(' · ');
     const cards = u.cards.map((id) => CARDS[id].name).join(', ');
-    return `<b>${u.name}</b> <small>Lv ${u.def.level} · ${ELEMENTS[u.elements[0]].name} · ${u.role} · ${u.team === 0 ? 'yours' : 'opponent'}</small>
+    return `<b>${u.name}</b> <small>Lv ${u.def.level} · ${ELEMENTS[u.elements[0]].name} · ${u.role} · ${u.team === this.me ? 'yours' : 'opponent'}</small>
       <p>HP ${Math.max(0, Math.round(u.hp))} / ${Math.round(u.maxHp)}${u.shield > 1 && u.shieldUntil > this.battle.t ? ` (+${Math.round(u.shield)} shield)` : ''}</p>
       <small>Auto: ${ABILITY_NAMES[u.abilities[0]] || '-'}${u.passive ? ` · Passive: ${ABILITY_NAMES[u.passive]}` : ''}${cards ? ` · Cards: ${cards}` : ''}</small>
       ${sts ? `<p>${sts}</p>` : ''}`;
@@ -198,12 +220,12 @@ export class BattleScene {
   _hoverUnit(u, on) { const v = this.view(u); if (v) v.hovered = on; this.hover = on ? u : null; }
 
   _renderHand() {
-    const b = this.battle, hand = b.hands[0];
-    const key = hand.map((e) => e.key).join('|') + '#' + (b.nextCard(0)?.key || '');
+    const b = this.battle, hand = b.hands[this.me];
+    const key = hand.map((e) => e.key).join('|') + '#' + (b.nextCard(this.me)?.key || '');
     if (key === this.handKey) return;
     this.handKey = key;
     this.dom.hand.innerHTML = hand.map((e) => this._cardHtml(e)).join('');
-    const nx = b.nextCard(0);
+    const nx = b.nextCard(this.me);
     this.dom.next.innerHTML = nx ? this._cardHtml(nx, true) : '';
     this.dom.hand.querySelectorAll('.card').forEach((cardEl, i) => {
       const entry = hand[i];
@@ -257,7 +279,7 @@ export class BattleScene {
     if (c.shape === 'cone' || c.shape === 'line') return { point: [pt.x, pt.z] };
     const tile = G.tileAt([pt.x, pt.z]);
     if (c.shape === 'single') {
-      const team = c.target === 'ally' ? 0 : 1;
+      const team = c.target === 'ally' ? this.me : this.foe;
       const cands = this.battle.teamAlive(team);
       let best = null, bd = 0.8;
       for (const u of cands) { const v = this.view(u).root.position; const d = Math.hypot(v.x - pt.x, v.z - pt.z); if (d < bd) { bd = d; best = u; } }
@@ -287,19 +309,24 @@ export class BattleScene {
     const aim = this._aimFrom(e);
     this.sel.aim = aim;
     const b = this.battle, c = CARDS[this.sel.entry.card];
-    const problem = aim ? b.cardProblem(0, this.sel.entry, aim) : 'Aim on the board';
+    const problem = aim ? b.cardProblem(this.me, this.sel.entry, aim) : 'Aim on the board';
     const spec = aim && this._teleSpec(this.sel.entry, aim);
-    if (spec) this.aimTele.show(spec, problem ? 'invalid' : b.energy[0] >= c.cost ? 'ready' : 'charging');
+    if (spec) this.aimTele.show(spec, problem ? 'invalid' : b.energy[this.me] >= c.cost ? 'ready' : 'charging');
     else this.aimTele.hide();
     this.sel.problem = problem;
     this._refreshMarks();
   }
   _commit(entry, aim) {
     const b = this.battle, c = CARDS[entry.card];
-    const problem = b.cardProblem(0, entry, aim);
+    const problem = b.cardProblem(this.me, entry, aim);
     if (problem) { this._flashHint(problem); return false; }
     this.sel = null;
-    if (b.energy[0] >= c.cost) { b.request(0, { kind: 'card', key: entry.key, aim }); this.aimTele.hide(); this._hint(''); }
+    if (b.energy[this.me] >= c.cost) {
+      const at = this._play({ kind: 'card', key: entry.key, aim });
+      // versus: keep the telegraph up until the cast actually starts (a few ticks of network delay)
+      if (at !== null) this.armed = { entry, aim, sentAt: this.net.tick };
+      else { this.aimTele.hide(); this._hint(''); }
+    }
     else { this.armed = { entry, aim }; this._hint(`${c.name} placed: it fires as soon as you have ${c.cost} energy (right-click to cancel)`); }
     this._refreshMarks();
     return true;
@@ -309,10 +336,10 @@ export class BattleScene {
   _key(e) {
     if (e.repeat) return;
     const k = e.key.toLowerCase();
-    if (k === ' ') { e.preventDefault(); if (this.phase === 'fight') this._togglePause(); else if (this.phase === 'deploy') this._start(); return; }
+    if (k === ' ') { e.preventDefault(); if (this.phase === 'fight' && !this.pvp) this._togglePause(); else if (this.phase === 'deploy') this._start(); return; }
     if (k === 'escape') { this._cancel(); return; }
     const i = KEYS.indexOf(k);
-    const entry = this.battle.hands[0][i];
+    const entry = this.battle.hands[this.me][i];
     if (i >= 0 && entry && this.phase === 'fight') {
       const c = CARDS[entry.card];
       if (c.shape === 'none' || c.shape === 'self') this._commit(entry, {});
@@ -327,9 +354,9 @@ export class BattleScene {
       return;
     }
     const p = this.stage.pickTile(e.clientX, e.clientY);
-    if (!p || this.phase !== 'deploy') return;
+    if (!p || this.phase !== 'deploy' || this.waiting) return;
     const u = this.battle.occ.get(hex.key(p));
-    if (u && u.team === 0) {
+    if (u && u.team === this.me) {
       this.drag = { unit: u, from: p, over: p };
       this.view(u).body.scale.setScalar(1.15);
     }
@@ -344,7 +371,7 @@ export class BattleScene {
     }
     const overCanvas = e.target === this.stage.canvas;
     const p = overCanvas ? this.stage.pickTile(e.clientX, e.clientY) : null;
-    if (this.phase === 'deploy' && this.drag && p && p[1] <= 3) {
+    if (this.phase === 'deploy' && this.drag && p && this._mine(p)) {
       this.drag.over = p;
       this.view(this.drag.unit).root.position.copy(this.stage.tiles.get(hex.key(p)).base).setY(this.stage.tileHeight(p) + 0.25);
       this._refreshMarks();
@@ -376,7 +403,7 @@ export class BattleScene {
       this.drag = null;
       this.view(unit).body.scale.setScalar(1);
       const b = this.battle;
-      if (over && over[1] <= 3 && !hex.same(over, from) && b.tile(over) !== 'icewall') {
+      if (over && this._mine(over) && !hex.same(over, from) && b.tile(over) !== 'icewall') {
         const other = b.occ.get(hex.key(over));
         b.occ.delete(hex.key(from));
         if (other) { other.pos = from; other.startPos = from; b.occ.set(hex.key(from), other); this.view(other).place(from); }
@@ -391,24 +418,63 @@ export class BattleScene {
     const marks = new Map();
     const b = this.battle;
     if (this.phase === 'deploy') {
-      for (const p of hex.ALL) if (p[1] <= 3) marks.set(hex.key(p), 0x4ab0ff);
+      if (!this.waiting) for (const p of hex.ALL) if (this._mine(p)) marks.set(hex.key(p), 0x4ab0ff);
       if (this.drag && this.drag.over) marks.set(hex.key(this.drag.over), 0xffffff);
     } else {
       const showing = this.sel && this.sel.aim ? this.sel : this.armed;
       if (showing && showing.aim) {
-        const col = this.sel && this.sel.problem ? 0x9a9aa8 : b.energy[0] >= CARDS[showing.entry.card].cost ? 0x46d6ff : 0xff4646;
-        for (const t of cardTiles(b, b.caster(showing.entry), showing.entry.card, showing.aim, 0)) marks.set(hex.key(t), col);
+        const col = this.sel && this.sel.problem ? 0x9a9aa8 : b.energy[this.me] >= CARDS[showing.entry.card].cost ? 0x46d6ff : 0xff4646;
+        for (const t of cardTiles(b, b.caster(showing.entry), showing.entry.card, showing.aim, this.me)) marks.set(hex.key(t), col);
       }
     }
     this.stage.setMarks(marks);
   }
   _start() {
-    if (this.phase !== 'deploy') return;
+    if (this.phase !== 'deploy' || this.waiting) return;
+    if (this.pvp) {   // versus: tell the friend where we stand, fight once both are ready
+      this.drag = null;
+      this.waiting = true;
+      const pos = this.battle.units.filter((u) => u.team === this.me).map((u) => u.pos);
+      this.myReady = { pos, auto: !!this.app.save.settings.autoSpecials };
+      this.pvp.link.send({ type: 'ready', ...this.myReady });
+      const btn = this.hud.querySelector('.fight');
+      btn.disabled = true; btn.innerHTML = `Waiting for ${this.pvp.foeName}…`;
+      this._refreshMarks();
+      this._tryBegin();
+      return;
+    }
+    this._begin();
+  }
+  _foeReady(m) {
+    // positions must be on the friend's own half, one per creature, all different
+    const n = this.battle.units.filter((u) => u.team === this.foe).length;
+    const half = (p) => (this.foe === 0 ? p[1] <= 3 : p[1] >= 4);
+    const pos = Array.isArray(m.pos) && m.pos.length === n && m.pos.every((p) => Array.isArray(p) && Number.isInteger(p[0]) && Number.isInteger(p[1])
+      && p[0] >= 0 && p[0] <= 6 && half(p) && this.battle.tile(p) !== 'icewall') ? m.pos.map((p) => [p[0], p[1]]) : null;
+    if (!pos || new Set(pos.map(hex.key)).size !== n || this.foeReady) return;
+    this.foeReady = { pos, auto: m.auto === true };
+    this._tryBegin();
+  }
+  _tryBegin() {
+    if (!this.myReady || !this.foeReady) {
+      if (this.foeReady) this._flashHint(`${this.pvp.foeName} is ready!`);
+      return;
+    }
+    const b = this.battle, ready = { [this.me]: this.myReady, [this.foe]: this.foeReady };
+    for (const team of [0, 1]) {
+      b.placeTeam(team, ready[team].pos);
+      if (ready[team].auto) b.policies[team] = new AutoSpecials();
+    }
+    for (const u of b.units) this.view(u).place(u.pos);
+    this.waiting = false;
+    this._begin();
+  }
+  _begin() {
     this.phase = 'fight';
     this.drag = null;
     this._hideTip();
     this.hud.querySelector('.deploy-banner').remove();
-    this.app.rememberPositions?.(this.battle.units.filter((u) => u.team === 0).map((u) => u.pos));
+    if (!this.pvp) this.app.rememberPositions?.(this.battle.units.filter((u) => u.team === 0).map((u) => u.pos));
     this._refreshMarks();
     this.hud.classList.add('fighting');
     this._banner('FIGHT!', 'big');
@@ -439,8 +505,9 @@ export class BattleScene {
           else tele.dispose();
           if (u) { v.castAnim(CARDS[e.card].kind === 'ult', true); fx.spark(this.head(u), { color: ELEMENT_COLOR[CARDS[e.card].element] || 0xc6a0ff, count: 10, speed: 1, size: 0.14, life: 0.4, gravity: 1 }); }
           const name = CARDS[e.card].name;
-          if (u) fx.text(this.head(u).add(new THREE.Vector3(0, 0.35, 0)), name, `${CARDS[e.card].kind === 'ult' ? 'special' : 'cast'} team${e.team}`);
-          else this._banner(`${e.team === 0 ? 'You' : 'Opponent'}: ${name}`, `team${e.team}`);
+          const side = e.team === this.me ? 0 : 1;
+          if (u) fx.text(this.head(u).add(new THREE.Vector3(0, 0.35, 0)), name, `${CARDS[e.card].kind === 'ult' ? 'special' : 'cast'} team${side}`);
+          else this._banner(`${side === 0 ? 'You' : this.pvp ? this.pvp.foeName : 'Opponent'}: ${name}`, `team${side}`);
           if (this.armed && this.armed.entry.key === e.key) { this.armed = null; this.aimTele.hide(); this._hint(''); this._refreshMarks(); }
           break;
         }
@@ -451,7 +518,7 @@ export class BattleScene {
           break;
         }
         case 'cast':
-          if (u && e.card && CARDS[e.ability].kind === 'ult' && u.team === 0) this.stage.shake = 0.12;
+          if (u && e.card && CARDS[e.ability].kind === 'ult' && u.team === this.me) this.stage.shake = 0.12;
           if (u && !e.card) v.castAnim(false, false);
           break;
         case 'projectile': fx.projectile(this.head(u), this.head(e.target), ELEMENT_COLOR[e.element], { size: e.big ? 0.28 : 0.2, dur: 0.3 / this.speed }); break;
@@ -474,7 +541,7 @@ export class BattleScene {
         case 'chain': fx.bolt(this.head(e.from), this.head(e.target)); break;
         case 'lightning': fx.lightning(this._tilePos(e.pos)); break;
         case 'damage':
-          if (e.amount >= 1) fx.text(this.head(u), String(Math.round(e.amount)), `dmg team${u.team} ${e.element}${e.dot ? ' dot' : ''}${e.cat === 'combo' ? ' combo' : ''}`);
+          if (e.amount >= 1) fx.text(this.head(u), String(Math.round(e.amount)), `dmg team${u.team === this.me ? 0 : 1} ${e.element}${e.dot ? ' dot' : ''}${e.cat === 'combo' ? ' combo' : ''}`);
           if (!e.dot) v.hitAnim();
           break;
         case 'heal': fx.text(this.head(u), `+${Math.round(e.amount)}`, 'heal'); fx.spark(this.head(u), { color: ELEMENT_COLOR.heal, count: 8, speed: 0.8, size: 0.14, life: 0.6, gravity: 1 }); break;
@@ -506,7 +573,7 @@ export class BattleScene {
     if (c) this.fx.spark(this.head(u), { color: ELEMENT_COLOR[c.elements[1]], count: 12, speed: 1.8, size: 0.18, life: 0.5 });
     if (e.chain >= 3) this.stage.shake = 0.18;
     const row = document.createElement('div');
-    row.className = `feed-row ${u.team === 1 ? 'mine' : 'theirs'}`;
+    row.className = `feed-row ${u.team === this.foe ? 'mine' : 'theirs'}`;
     row.innerHTML = `<b>${e.name}</b>${chain} <small>${c ? c.desc : ''}</small>`;
     this.dom.feed.prepend(row);
     while (this.dom.feed.children.length > 4) this.dom.feed.lastChild.remove();
@@ -520,12 +587,23 @@ export class BattleScene {
     if (this.phase === 'fight' && !this.paused) {
       this.acc += dt * this.speed;
       let steps = 0;
-      while (this.acc >= DT && !b.over && steps < 10) { b.step(); this.acc -= DT; steps++; this._events(); }
+      while (this.acc >= DT && !b.over && steps < 10) {
+        if (this.net) { if (!this.net.canStep()) break; this.net.step(b); } else b.step();
+        this.acc -= DT; steps++; this._events();
+      }
+      if (this.net) {
+        this.acc = Math.min(this.acc, 1);   // after a stall, catch up at most a second
+        const stalled = !b.over && performance.now() - this.net.lastStep > 1200;
+        if (stalled !== this.stalled) { this.stalled = stalled; this._hint(stalled ? `Waiting for ${this.pvp.foeName}… (connection is slow)` : ''); }
+        if (this.net.desync !== null && !this.desyncShown) { this.desyncShown = true; this._banner('Out of sync with your friend', 'event'); }
+      }
       if (steps) this.stage.syncTiles(b);
       // a pre-positioned card fires as soon as there is enough energy
-      if (this.armed && b.energy[0] >= CARDS[this.armed.entry.card].cost) {
-        if (b.cardProblem(0, this.armed.entry, this.armed.aim)) { if (!b.hands[0].includes(this.armed.entry)) this._cancel(); }
-        else b.request(0, { kind: 'card', key: this.armed.entry.key, aim: this.armed.aim });
+      const me = this.me, a = this.armed;
+      const inFlight = a && a.sentAt != null && this.net && this.net.tick - a.sentAt < INPUT_DELAY + 6;
+      if (a && !inFlight && b.energy[me] >= CARDS[a.entry.card].cost) {
+        if (b.cardProblem(me, a.entry, a.aim)) { if (!b.hands[me].includes(a.entry)) this._cancel(); }
+        else { this._play({ kind: 'card', key: a.entry.key, aim: a.aim }); if (this.net) a.sentAt = this.net.tick; }
       }
     }
     const vdt = this.paused ? 0 : dt * (this.phase === 'fight' ? this.speed : 1);
@@ -534,12 +612,12 @@ export class BattleScene {
     this.aimTele.update(dt);
     if (this.armed && !this.sel) {
       const spec = this._teleSpec(this.armed.entry, this.armed.aim);
-      if (spec) this.aimTele.show(spec, b.energy[0] >= CARDS[this.armed.entry.card].cost ? 'ready' : 'charging');
+      if (spec) this.aimTele.show(spec, b.energy[this.me] >= CARDS[this.armed.entry.card].cost ? 'ready' : 'charging');
       this._refreshMarks();
     } else if (this.sel && this.sel.aim && this.lastMouse) this._updateAim(this.lastMouse);
     for (const c of this.castTeles) {
       c.tele.update(dt);
-      c.tele.show(c.spec, c.team === 0 ? 'ready' : 'enemy', Math.min(1, (b.t - c.t0) / c.dur));
+      c.tele.show(c.spec, c.team === this.me ? 'ready' : 'enemy', Math.min(1, (b.t - c.t0) / c.dur));
     }
     this._updateHud();
   }
@@ -551,11 +629,11 @@ export class BattleScene {
     const evLeft = Math.ceil(this.map.eventTime - b.t), otLeft = Math.ceil(OVERTIME_AT - b.t);
     this.dom.event.textContent = this.phase !== 'fight' ? '' : !b.eventDone ? `${this.map.eventName.replace('!', '')} in ${evLeft}s` : !b.overtime ? `Overtime in ${otLeft}s` : 'Damage rising every second';
     this._renderHand();
-    const en = b.energy[0];
+    const en = b.energy[this.me];
     this.dom.gem.textContent = Math.floor(en);
     this.dom.segs.forEach((seg, i) => seg.style.setProperty('--f', String(Math.max(0, Math.min(1, en - i)))));
     this.dom.hand.querySelectorAll('.card').forEach((cardEl) => {
-      const entry = b.hands[0].find((e) => e.key === cardEl.dataset.key);
+      const entry = b.hands[this.me].find((e) => e.key === cardEl.dataset.key);
       if (!entry) return;
       const c = CARDS[entry.card];
       const ok = en >= c.cost;
@@ -591,27 +669,41 @@ export class BattleScene {
     for (const c of this.castTeles) c.tele.dispose();
     this.castTeles = [];
     for (const u of this.battle.units) if (u.team === winner && u.alive) this.view(u).victory();
-    const won = winner === 0;
+    const won = winner === this.me;
     const card = document.createElement('div');
     card.className = `endcard ${won ? 'win' : 'lose'}`;
     const combos = Object.entries(this.battle.reactions).sort((a, c) => c[1] - a[1]).map(([n, k]) => `${n} ×${k}`).join(' · ') || 'none';
-    const caught = this.battle.captured.filter((u) => u.team === 1);
+    const caught = this.battle.captured.filter((u) => u.team === this.foe);
     card.innerHTML = `<h1>${won ? 'Victory!' : 'Defeat'}</h1>
-      <p>${this.battle.timeout ? 'Time ran out: the team with more health left wins.' : won ? 'The opposing team has fallen.' : 'Your team was defeated.'}
+      <p>${this.battle.timeout ? 'Time ran out: the team with more health left wins.' : won ? 'The opposing team has fallen.' : 'Your team was defeated.'}${this.net && this.net.desync !== null ? ' (The two screens fell out of sync during this match, so the result may differ on your friend\'s screen.)' : ''}
         Fight time ${this.dom.clock.textContent}. Combos: ${combos}</p>
       ${caught.length ? `<p class="caught">${won ? 'Captured' : 'Captured (but lost when your team fell)'}: <b>${caught.map((u) => u.name).join(', ')}</b></p>` : ''}
       <div class="tabs"><button class="tab on" data-t="0">Your team</button><button class="tab" data-t="1">Opponent</button></div>
-      <div class="table-wrap">${this._statsTable(0)}</div>
+      <div class="table-wrap">${this._statsTable(this.me)}</div>
       <button class="primary cont">Continue</button>`;
     card.querySelectorAll('.tab').forEach((tb) => tb.addEventListener('click', () => {
       card.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === tb));
-      card.querySelector('.table-wrap').innerHTML = this._statsTable(+tb.dataset.t);
+      card.querySelector('.table-wrap').innerHTML = this._statsTable(+tb.dataset.t === 0 ? this.me : this.foe);
     }));
     card.querySelector('.cont').addEventListener('click', () => this.onEnd({ won, battle: this.battle, captured: won ? caught : [] }));
     setTimeout(() => this.hud.appendChild(card), 900);
   }
 
+  /** Versus: the friend closed the page or lost the connection. */
+  _disconnected() {
+    if (this.phase === 'end' || this.disposed) return;
+    this.phase = 'end';
+    this._cancel();
+    const card = document.createElement('div');
+    card.className = 'endcard lose';
+    card.innerHTML = `<h1>Connection lost</h1><p>${this.pvp.foeName} left the match or their connection dropped.</p><button class="primary cont">Continue</button>`;
+    card.querySelector('.cont').addEventListener('click', () => this.onEnd({ won: false, battle: this.battle, captured: [], disconnected: true }));
+    this.hud.appendChild(card);
+  }
+
   dispose() {
+    this.disposed = true;
+    this._offMsg?.(); this._offClose?.();
     window.removeEventListener('keydown', this._handlers.keydown);
     window.removeEventListener('pointermove', this._handlers.move);
     window.removeEventListener('pointerup', this._handlers.up);

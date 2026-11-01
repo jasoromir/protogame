@@ -72,6 +72,7 @@ export class UnitView {
   constructor(ctx, unit) {
     this.ctx = ctx;
     this.unit = unit;
+    this.side = unit.team === (ctx.me || 0) ? 0 : 1;   // 0 = the viewer's creature (blue), 1 = opponent (red)
     const { stage, assets } = ctx;
     this.root = new THREE.Group();
     this.body = new THREE.Group();
@@ -113,7 +114,7 @@ export class UnitView {
       this.height = 0.65 * ph.group.scale.y;
     }
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.37, 32),
-      new THREE.MeshBasicMaterial({ color: unit.team === 0 ? 0x4ab0ff : 0xff5040, transparent: true, opacity: 0.85 }));
+      new THREE.MeshBasicMaterial({ color: this.side === 0 ? 0x4ab0ff : 0xff5040, transparent: true, opacity: 0.85 }));
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.02;
     this.root.add(ring);
@@ -130,7 +131,7 @@ export class UnitView {
 
   _makeBar() {
     const el = document.createElement('div');
-    el.className = `unitbar team${this.unit.team}`;
+    el.className = `unitbar team${this.side}`;
     const color = ELEMENTS[this.unit.elements[0]].color;
     const seg = Math.max(4, Math.round(this.unit.maxHp / 500));   // one tick per 500 HP, like TFT
     el.style.setProperty('--el', color);

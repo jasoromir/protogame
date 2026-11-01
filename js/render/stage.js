@@ -214,8 +214,10 @@ export class Stage {
     }
   }
 
-  setBattleCamera() {
+  /** flip = view from the far side (the guest in a versus match sees their own team at the bottom). */
+  setBattleCamera(flip = false) {
     this.cameraMode = 'battle';
+    this.camFlip = flip;
     this.camera.fov = 36; this.camera.updateProjectionMatrix();
     this.camera.position.set(0, 7.3, 6.9);
     this.camera.lookAt(0, 0, 0.55);
@@ -259,8 +261,9 @@ export class Stage {
     if (this.cameraMode === 'battle') {
       this.shake = Math.max(0, (this.shake || 0) - dt);
       const k = this.shake * 0.5;
-      this.camera.position.set((Math.random() - 0.5) * k, 7.3 + (Math.random() - 0.5) * k, 6.9);
-      this.camera.lookAt(0, 0, 0.55);
+      const f = this.camFlip ? -1 : 1;
+      this.camera.position.set((Math.random() - 0.5) * k, 7.3 + (Math.random() - 0.5) * k, 6.9 * f);
+      this.camera.lookAt(0, 0, 0.55 * f);
     }
     for (const t of this.tiles.values()) {
       if (t.type === 'steam') t.mat.emissiveIntensity = 0.6 + Math.sin(this.time * 3 + t.base.x) * 0.2;
