@@ -1,6 +1,9 @@
 // Player progression: collection, levels, evolutions, keys, gyms. Saved in localStorage.
 import { LINES, PACING, currentForm, nextEvolution, statsFor, ABILITY_NAMES } from '../data/creatures.js';
-import { DEFAULT_KIT } from '../sim/abilities.js';
+import { TRAINER_CARDS } from '../sim/cards.js';
+
+export const START_TEAM_SIZE = 2, MAX_TEAM_SIZE = 9;
+const DEFAULT_KIT = ['mend', 'rally'];
 
 const SAVE_KEY = 'project-ember-save-v1';
 let nextUid = 1;
@@ -10,12 +13,24 @@ export function newCreature(line, level = PACING.startLevel) {
 }
 
 export function newGame(partner) {
-  const team = [partner, 'Brinehorn', 'Lotl', 'Zippit', 'Terragon', 'Mossfawn'].map((l) => newCreature(l));
-  return { version: 1, partner, creatures: team, team: team.map((c) => c.uid), kit: [...DEFAULT_KIT],
+  const team = [partner, partner === 'Brinehorn' ? 'Mossfawn' : 'Brinehorn'].map((l) => newCreature(l));
+  return { version: 3, partner, creatures: team, team: team.map((c) => c.uid), kit: [...DEFAULT_KIT], teamSize: START_TEAM_SIZE,
+           world: null,
            keys: [], gymsBeaten: [], battles: 0, seen: [], positions: {}, settings: { autoSpecials: false, speed: 1 } };
 }
 
-export const load = () => { try { return JSON.parse(localStorage.getItem(SAVE_KEY)); } catch { return null; } };
+export const load = () => {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch { return null; }
+  if (!s) return null;
+  // upgrade older saves to Combat 3.0
+  if (!s.teamSize) s.teamSize = Math.max(START_TEAM_SIZE, Math.min(s.team.length, START_TEAM_SIZE + (s.gymsBeaten || []).length));
+  s.team = s.team.slice(0, s.teamSize);
+  s.kit = (s.kit || []).filter((k) => TRAINER_CARDS.includes(k)).slice(0, 2);
+  if (s.kit.length < 2) s.kit = [...new Set([...s.kit, ...DEFAULT_KIT])].slice(0, 2);
+  s.version = 3;
+  return s;
+};
 export const save = (s) => localStorage.setItem(SAVE_KEY, JSON.stringify(s));
 export const wipe = () => localStorage.removeItem(SAVE_KEY);
 
@@ -64,6 +79,9 @@ export function grantGymReward(s, gym) {
     const c = newCreature(line, Math.max(PACING.startLevel, averageLevel(s) - 1));
     s.creatures.push(c); got.creature = c;
     if (!s.keys.includes(gym.reward.key)) { s.keys.push(gym.reward.key); got.key = gym.reward.key; }
+    if (s.teamSize < MAX_TEAM_SIZE) { s.teamSize++; got.teamSize = s.teamSize; }
+    // fill the new slot right away: the gym's gift creature joins the team
+    if (s.team.length < s.teamSize && !s.team.includes(c.uid)) s.team.push(c.uid);
   }
   return got;
 }
@@ -101,4 +119,12 @@ export function savedPositions(s) {
   if (pos.some((p) => !p || p[1] > 3)) return null;
   const keys = new Set(pos.map((p) => `${p[0]},${p[1]}`));
   return keys.size === pos.length ? pos : null;
+}
+
+// ---------- capture ----------
+export function addCaptured(s, line, level) {
+  const c = newCreature(line, level);
+  s.creatures.push(c);
+  if (s.team.length < s.teamSize) s.team.push(c.uid);
+  return c;
 }

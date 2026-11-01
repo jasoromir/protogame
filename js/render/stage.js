@@ -86,6 +86,7 @@ export class Stage {
 
   setMap(map) {
     this.map = map;
+    this.boardGroup.visible = true;
     this.scene.background = new THREE.Color(map.sky);
     this.scene.fog = new THREE.Fog(map.sky, 14, 34);
     this.hemi.groundColor = new THREE.Color(map.ground);
@@ -215,11 +216,12 @@ export class Stage {
 
   setBattleCamera() {
     this.cameraMode = 'battle';
+    this.camera.fov = 36; this.camera.updateProjectionMatrix();
     this.camera.position.set(0, 7.3, 6.9);
     this.camera.lookAt(0, 0, 0.55);
     this.shake = 0;
   }
-  setTitleCamera() { this.cameraMode = 'orbit'; }
+  setTitleCamera() { this.cameraMode = 'orbit'; this.camera.fov = 36; this.camera.updateProjectionMatrix(); }
 
   pickTile(clientX, clientY) {
     const r = this.canvas.getBoundingClientRect();
@@ -227,6 +229,15 @@ export class Stage {
     this.raycaster.setFromCamera(v, this.camera);
     const hits = this.raycaster.intersectObjects([...this.tiles.values()].map((t) => t.mesh));
     return hits.length ? hits[0].object.userData.pos : null;
+  }
+
+  /** Ground point (y = 0 plane) under the mouse, or null. */
+  pickPoint(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    const v = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(v, this.camera);
+    const hit = new THREE.Vector3();
+    return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit) ? hit : null;
   }
 
   /** World position -> pixel position on screen (for HTML health bars and text). */

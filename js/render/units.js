@@ -131,10 +131,15 @@ export class UnitView {
   _makeBar() {
     const el = document.createElement('div');
     el.className = `unitbar team${this.unit.team}`;
-    el.innerHTML = `<div class="ub-icons"></div><div class="ub-name">${this.unit.name} <span>Lv${this.unit.def.level}</span></div>
-      <div class="ub-hp"><i class="hp"></i><i class="sh"></i></div><div class="ub-en"><i class="en"></i><i class="sp"></i></div>`;
+    const color = ELEMENTS[this.unit.elements[0]].color;
+    const seg = Math.max(4, Math.round(this.unit.maxHp / 500));   // one tick per 500 HP, like TFT
+    el.style.setProperty('--el', color);
+    el.style.setProperty('--seg', String(seg));
+    el.innerHTML = `<div class="ub-icons"></div><div class="ub-row"><div class="ub-lv">${this.unit.def.level}</div>
+      <div class="ub-bars"><div class="ub-hp"><i class="hp"></i><i class="sh"></i><b class="ticks"></b></div><div class="ub-en"><i class="en"></i></div></div></div>
+      <div class="ub-cast"><i></i></div>`;
     this.ctx.overlay.appendChild(el);
-    return { el, hp: el.querySelector('.hp'), sh: el.querySelector('.sh'), en: el.querySelector('.en'), sp: el.querySelector('.sp'),
+    return { el, hp: el.querySelector('.hp'), sh: el.querySelector('.sh'), en: el.querySelector('.en'), cast: el.querySelector('.ub-cast i'),
              icons: el.querySelector('.ub-icons'), iconStr: '' };
   }
 
@@ -176,8 +181,8 @@ export class UnitView {
     if (this.mixer) this.play('Attack', true);
     if (!ranged) this.lunge = 1;
   }
-  castAnim(special, ability) {
-    const clip = special ? 'Special' : (this.unit.abilities.indexOf(ability) === 1 ? 'Ability2' : 'Ability1');
+  castAnim(special, card) {
+    const clip = special ? 'Special' : card ? 'Ability2' : 'Ability1';
     if (this.mixer) this.play(clip, true);
     this.hop = special ? 1 : 0.5;
   }
@@ -288,13 +293,15 @@ export class UnitView {
     // health bar
     const sp = this.ctx.stage.project(this.root.position.clone().add(new THREE.Vector3(0, this.height + 0.22, 0)));
     const b = this.bar;
-    b.el.style.transform = `translate(${sp.x - 34}px, ${sp.y - 22}px)`;
+    b.el.style.transform = `translate(${sp.x - 38}px, ${sp.y - 24}px)`;
     b.el.style.display = (u.alive || this.dead) && sp.visible ? '' : 'none';
     b.hp.style.width = `${Math.max(0, u.hpf) * 100}%`;
     b.sh.style.width = `${Math.min(1, (u.shieldUntil > battle.t ? u.shield : 0) / u.maxHp) * 100}%`;
     b.en.style.width = `${u.energy}%`;
-    b.sp.style.width = `${u.special ? u.smeter : 0}%`;
-    b.el.classList.toggle('special-ready', !!u.special && u.smeter >= 100 && u.active);
+    const casting = u.channelUntil > battle.t && u.active;
+    b.el.classList.toggle('casting', casting);
+    if (casting) b.cast.style.width = `${100 * (1 - (u.channelUntil - battle.t) / (u.castDur || 0.5))}%`;
+    b.el.classList.toggle('hovered', !!this.hovered);
     const icons = u.active ? STATUS_ICONS.filter(([st]) => battle.has(u, st)).map(([, i]) => i).join('') : '';
     if (icons !== b.iconStr) { b.iconStr = icons; b.icons.textContent = icons; }
   }

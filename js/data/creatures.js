@@ -14,6 +14,7 @@ const S = (hp, atk, aspd, range, armor, move) => ({ hp, atk, aspd, range, armor,
 // forms[i].at = level the line evolves into this form. A form with `paths` is a branch point.
 export const LINES = {
   Cindrake: {
+    skill: 'ember_burst', ult: 'inferno_breath',
     element: ['fire'], role: 'Mage', stats: S(750, 70, 0.8, 3, 20, 1.0),
     abilities: ['flame_spit', 'wing_gust'], passive: 'kindling', special: 'inferno_breath',
     forms: [
@@ -22,52 +23,61 @@ export const LINES = {
       { at: 'EVO2', paths: {
         A: { name: 'Pyrewyrm', key: 'Volcanic Heart', role: 'Mage', blurb: 'Beast dragon. Ranged mage: Inferno Breath scorches a cone.' },
         B: { name: 'Ignarion', key: "Warrior's Crest", role: 'Duelist', blurb: 'Humanoid dragon warrior. Melee duelist: Meteor Dive slams the target.',
-             stats: S(1050, 75, 0.95, 1, 35, 1.1), passive: 'ember_blade', special: 'meteor_dive' },
+             stats: S(1050, 75, 0.95, 1, 35, 1.1), passive: 'ember_blade', ult: 'meteor_dive' },
       } },
     ],
   },
   Ashlet: {
+    skill: 'kindle', ult: 'sunflare',
     element: ['fire'], role: 'Support', stats: S(650, 40, 0.9, 2, 15, 1.0),
     abilities: ['warm_embers', 'cauterize'], passive: 'rekindle', special: 'sunflare',
     forms: [{ name: 'Ashlet', at: 1 }, { name: 'Phoenara', at: 'EVO_TWO' }],
   },
   Brinehorn: {
+    skill: 'tidal_charge', ult: 'tidal_wave',
     element: ['water'], role: 'Tank', stats: S(1400, 45, 0.7, 1, 45, 0.8),
     abilities: ['tidal_charge', 'brace'], passive: 'undertow', special: 'tidal_wave',
     forms: [{ name: 'Brinehorn', at: 1 }],
   },
   Lotl: {
+    skill: 'bubble', ult: 'wellspring',
     element: ['water'], role: 'Support', stats: S(700, 35, 1.0, 3, 20, 1.0),
     abilities: ['bubble', 'splash'], passive: 'hydrate', special: 'wellspring',
     forms: [{ name: 'Lotl', at: 1 }, { name: 'Mirelle', at: 'EVO_TWO' }],
   },
   Hrimfang: {
+    skill: 'frost_shard', ult: 'avalanche_pounce',
     element: ['ice'], role: 'Assassin', stats: S(800, 85, 1.1, 1, 20, 1.4),
     abilities: ['frostbite', 'blizzard_veil'], passive: 'shatter', special: 'avalanche_pounce',
     forms: [{ name: 'Hrimfang', at: 1 }, { name: 'Frostfang', at: 'EVO1' }, { name: 'Glacierfang', at: 'EVO2' }],
   },
   Flurrette: {
+    skill: 'ice_wall', ult: 'whiteout',
     element: ['ice'], role: 'Controller', stats: S(700, 45, 0.9, 3, 20, 1.0),
     abilities: ['snowdrift', 'ice_wall'], passive: 'frost_aura', special: 'whiteout',
     forms: [{ name: 'Flurrette', at: 1 }],
   },
   Zippit: {
+    skill: 'static_charge', ult: 'lightning_lance',
     element: ['electric'], role: 'Marksman', stats: S(600, 55, 1.25, 4, 10, 1.2),
     abilities: ['spark_shot', 'zip'], passive: 'static_build', special: 'lightning_lance',
     forms: [{ name: 'Zippit', at: 1 }, { name: 'Thundraxa', at: 'EVO_TWO' }],
   },
   Raijura: {
+    skill: 'lightning_dash', ult: 'storm_leap',
     element: ['electric'], role: 'Bruiser', stats: S(1100, 72, 1.05, 1, 30, 1.25),
     abilities: ['thunder_claw', 'lightning_dash'], passive: 'overload', special: 'stormcall',
     forms: [{ name: 'Raijura', at: 1 }, { name: 'Raijuron', at: 'EVO1' },
-            { name: 'Raigar', at: 'EVO2', role: 'Duelist', special: 'storm_avatar' }],
+            { name: 'Raigar', at: 'EVO2', role: 'Duelist', ult: 'storm_avatar' }],
   },
   Terragon: {
+    skill: 'stone_skin', ult: 'tectonic_rise',
     element: ['earth'], role: 'Tank', stats: S(1500, 50, 0.6, 1, 50, 0.7),
     abilities: ['quake_stomp', 'stone_skin'], passive: 'grounded', special: 'tectonic_rise',
     forms: [{ name: 'Terragon', at: 1 }, { name: 'Craghorn', at: 'EVO1' }, { name: 'Terravault', at: 'EVO2' }],
   },
   Mossfawn: {
+    skill: 'bloom', ult: 'sanctuary_grove',
     element: ['earth'], role: 'Healer', stats: S(750, 35, 0.9, 3, 25, 1.0),
     abilities: ['bloom', 'thornroot'], passive: 'overgrowth', special: 'sanctuary_grove',
     forms: [{ name: 'Mossfawn', at: 1 }, { name: 'Sylvara', at: 'EVO_TWO' }],
@@ -143,12 +153,14 @@ export function knownAbilities(c) {
   return [[line.abilities[0], 1], [line.abilities[1], u.a2], [ELEMENT_MOVE[line.element[0]], u.a3]]
     .map(([id, at]) => ({ id, at, known: c.level >= at }));
 }
-export function equipped(c) {
+/** The automatic ability (fires on its own from the creature's attack energy). */
+export function autoAbility(c) {
   const known = knownAbilities(c).filter((a) => a.known).map((a) => a.id);
-  const eq = (c.equipped || []).filter((id) => known.includes(id));
-  for (const id of known) if (eq.length < 2 && !eq.includes(id)) eq.push(id);
-  return eq.slice(0, 2);
+  const chosen = (c.equipped || [])[0];
+  if (known.includes(chosen)) return chosen;
+  return known.find((id) => id !== LINES[c.line].skill) || known[0];
 }
+export const equipped = (c) => [autoAbility(c)];
 
 const evoLevel = (at) => (typeof at === 'number' ? at : PACING.evo[at]);
 
@@ -183,9 +195,10 @@ export function statsFor(c) {
   return {
     line: c.line, name: form.name, element: line.element, role: form.role || line.role,
     hp: base.hp * k, atk: base.atk * k, aspd: base.aspd, range: base.range, armor: base.armor, move: base.move,
-    abilities: equipped(c),
+    auto: autoAbility(c),
+    cards: [form.skill || line.skill, ...(c.level >= u.special ? [form.ult || line.ult] : [])],
     passive: c.level >= u.passive ? (form.passive || line.passive) : null,
-    special: c.level >= u.special ? (form.special || line.special) : null,
+    special: form.ult || line.ult,
     level: c.level, look: LOOKS[form.name] || null,
   };
 }

@@ -1,7 +1,8 @@
 // Menu screens (HTML over the 3D canvas): title, world map, team, results, path choice, how to play.
 import { Battle } from '../sim/engine.js';
 import { MAPS } from '../sim/maps.js';
-import { TRAINER } from '../sim/abilities.js';
+import { CARDS, TRAINER_CARDS } from '../sim/cards.js';
+import { cardIcon, SHAPE_LABEL } from './icons.js';
 import { UnitView } from '../render/units.js';
 import { FX } from '../render/fx.js';
 import { GYMS, TRAINING } from '../data/gyms.js';
@@ -75,14 +76,17 @@ export function howToPlay(app, back = () => (app.inGame ? app.showMap() : titleS
   const el = h(`<div class="screen howto"><div class="panel">
     <h2>How to play</h2>
     <ul>
-      <li><b>Creatures fight on their own.</b> They move, attack and use Ability 1 and 2 automatically.</li>
-      <li><b>You fire the Specials.</b> When a portrait glows gold, click it (or press 1–6) to unleash that creature's Special. Timing is everything: wait until several enemies are in range.</li>
-      <li><b>Trainer abilities</b> (Q / W / E) spend trainer energy, which fills slowly and faster when your creatures get kills. Mend, Shield and Revive need a target: press the key, then click a creature.</li>
-      <li><b>Deploy before each fight.</b> Click a creature, then a blue-edged tile. Front-liners in front, ranged creatures behind.</li>
-      <li><b>Terrain:</b> high ground gives +1 range and protection, brush hides you from ranged attacks, rivers Soak, lava Burns. Abilities create terrain too, and each map has an event mid-fight.</li>
-      <li><b>Reactions:</b> Burn + Chill = Thermal Shock, Shock on Soaked = Conduct (chains to every Soaked enemy), Chill on Soaked = Flash Freeze, Burn + Crack = Magma.</li>
-      <li><b>Progress:</b> creatures gain XP, unlock Ability 2 (Lv ${PACING.unlock.a2}), a Passive (Lv ${PACING.unlock.passive}) and their Special (Lv ${PACING.unlock.special}), and evolve. Some evolutions let you choose a path, which needs a key from a gym.</li>
-      <li><b>Controls:</b> Space pauses (or starts the fight), 1×/2×/3× speed, Esc cancels targeting.</li>
+      <li><b>Creatures fight on their own:</b> they move, attack and use their automatic ability.</li>
+      <li><b>You play their cards.</b> Each creature brings a <b>skill</b> and (from Lv 13) an <b>ultimate</b> card into your deck; your trainer adds two. You hold 4 cards; a played card goes to the back and the next one comes in (see "Next").</li>
+      <li><b>Shared energy:</b> every card costs energy from the purple bar, which refills over time. Max 10.</li>
+      <li><b>Aim:</b> drag a card onto the board (or click it, or press 1–4, then click). The indicator shows exactly what it hits: <b>cones</b> from the creature's mouth, <b>areas</b> dropped anywhere, <b>lines</b>, single <b>targets</b>, <b>leaps</b>.</li>
+      <li><b>Red vs blue:</b> red means not enough energy yet. Release anyway and the card waits on the board, turning blue and firing by itself the moment you can afford it.</li>
+      <li><b>Cast time:</b> cards take a moment to cast and enemies see the indicator. Stun or freeze a creature mid-cast to <b>interrupt</b> it; watch the orange enemy indicators and move or shield.</li>
+      <li><b>Combos:</b> each element leaves a mark; a different element on that mark sets off a combo (Soak + Shock = Conduct, Soak + Chill = Flash Freeze, Freeze + Earth = Shatter, Burn + Shock = Plasma Burst…). Chain them for a multiplier.</li>
+      <li><b>Deploy:</b> before each fight, drag your creatures onto the blue tiles. Terrain matters: hover any tile.</li>
+      <li><b>Overtime:</b> after 70s damage keeps rising and healing is halved, so fights always end.</li>
+      <li><b>Wild creatures:</b> weaken one below 30% HP and hit it with the <b>Capture</b> card to add it to your collection.</li>
+      <li><b>Auto</b> button: an AI plays your cards for you. Space pauses.</li>
     </ul>
     <button class="primary">Got it</button></div></div>`);
   el.querySelector('button').onclick = back;
@@ -136,11 +140,16 @@ export function mapScreen(app) {
 }
 
 // ---------------- team & collection ----------------
+export function cardChip(id, locked = false, lv = 0) {
+  const c = CARDS[id];
+  const tip = `${c.name} (${c.kind === 'ult' ? 'Ultimate' : c.kind === 'skill' ? 'Skill' : 'Trainer'} · ${SHAPE_LABEL[c.shape]} · ${c.cost} energy): ${c.desc}${locked ? ` Unlocks at Lv ${lv}.` : ''}`;
+  return `<span class="cchip ${locked ? 'locked' : ''} ${c.kind}" title="${tip.replace(/"/g, '&quot;')}">${cardIcon(id, { size: 30, dim: locked })}<b>${c.name}</b><i>${c.cost}</i></span>`;
+}
 function abilityList(c) {
   const st = statsFor(c), line = LINES[c.line], form = currentForm(c), u = PACING.unlock;
-  const row = (label, id, lv) => `<li class="${c.level >= lv ? '' : 'locked'}">${label}: <b>${ABILITY_NAMES[id]}</b>${c.level >= lv ? '' : ` <small>Lv ${lv}</small>`}</li>`;
-  return `<ul class="abl">${row('Ability 1', line.abilities[0], 1)}${row('Ability 2', line.abilities[1], u.a2)}
-    ${row('Passive', form.passive || line.passive, u.passive)}${row('Special', form.special || line.special, u.special)}</ul>
+  const ult = form.ult || line.ult;
+  return `<div class="abl"><div class="auto-ab" title="${ABILITY_DESC[st.auto] || ''}">Auto: <b>${ABILITY_NAMES[st.auto]}</b>${c.level >= u.passive ? ` · Passive: <b>${ABILITY_NAMES[form.passive || line.passive]}</b>` : ''}</div>
+    <div class="cards-row">${cardChip(form.skill || line.skill)}${cardChip(ult, c.level < u.special, u.special)}</div></div>
     <p class="stats">HP ${Math.round(st.hp)} · ATK ${Math.round(st.atk)} · Range ${st.range} · Armor ${st.armor}</p>`;
 }
 
@@ -168,7 +177,7 @@ export function teamScreen(app, opponent) {
     const team = new Set(s.team);
     const el = h(`<div class="screen team">
       <div class="team-head"><h2>${opponent ? `Prepare for ${opponent.name}` : 'Team & collection'}</h2>
-        <p>Pick up to 6 creatures (${s.team.length}/6) and 3 trainer abilities.</p></div>
+        <p>Pick up to <b>${s.teamSize}</b> creatures (${s.team.length}/${s.teamSize}) and 2 trainer cards. Each creature adds its two cards to your deck. Beat gyms to grow your team.</p></div>
       <div class="cards">${s.creatures.map((c) => {
         const f = currentForm(c), nx = nextEvolution(c);
         return `<div class="ccard ${team.has(c.uid) ? 'in' : ''}" style="--el:${elColor(c.line)}" data-uid="${c.uid}">
@@ -181,7 +190,7 @@ export function teamScreen(app, opponent) {
         </div>`;
       }).join('')}</div>
       <div class="team-syn">${synergyPreview(s)}</div>
-      <div class="kit"><h3>Trainer kit</h3>${Object.entries(TRAINER).map(([k, d]) => `<button class="chip ${s.kit.includes(k) ? 'on' : ''}" data-k="${k}" title="${d.desc}">${d.name} <small>${d.cost}</small></button>`).join('')}</div>
+      <div class="kit"><h3>Trainer cards</h3>${TRAINER_CARDS.map((k) => `<button class="chip ${s.kit.includes(k) ? 'on' : ''}" data-k="${k}" title="${CARDS[k].desc}">${cardIcon(k, { size: 26 })}${CARDS[k].name} <small>${CARDS[k].cost}</small></button>`).join('')}</div>
       <div class="team-foot"><button data-a="back">Back</button>${opponent ? '<button class="primary" data-a="go">Battle!</button>' : ''}</div>
     </div>`);
     el.querySelectorAll('.ccard').forEach((cc) => cc.onclick = (e) => {
@@ -189,13 +198,13 @@ export function teamScreen(app, opponent) {
       if (e.target.classList.contains('evolve')) { pathChoice(app, P.byUid(s, uid), () => render()); return; }
       if (e.target.classList.contains('details')) { creatureSheet(app, P.byUid(s, uid), () => render()); return; }
       if (team.has(uid)) { if (s.team.length > 1) s.team = s.team.filter((x) => x !== uid); }
-      else if (s.team.length < 6) s.team.push(uid);
+      else if (s.team.length < s.teamSize) s.team.push(uid);
       app.persist(); render();
     });
     el.querySelectorAll('.chip').forEach((ch) => ch.onclick = () => {
       const k = ch.dataset.k;
       if (s.kit.includes(k)) { if (s.kit.length > 1) s.kit = s.kit.filter((x) => x !== k); }
-      else if (s.kit.length < 3) s.kit.push(k);
+      else if (s.kit.length < 2) s.kit.push(k);
       app.persist(); render();
     });
     el.querySelector('[data-a="back"]').onclick = () => app.showMap();
@@ -209,7 +218,8 @@ export function teamScreen(app, opponent) {
 export function resultsScreen(app, { won, reports, reward, opponent }) {
   const el = h(`<div class="screen results"><div class="panel">
     <h2>${won ? 'Victory' : 'Defeat'} · ${opponent.name}</h2>
-    ${reward && reward.creature ? `<div class="reward">New creature: <b>${reward.creature.line}</b> joins your collection!${reward.key ? ` You earned the <b>${reward.key}</b>.` : ''}</div>` : ''}
+    ${reward && reward.creature ? `<div class="reward">New creature: <b>${reward.creature.line}</b> joins your collection!${reward.key ? ` You earned the <b>${reward.key}</b>.` : ''}${reward.teamSize ? ` <b>Team size is now ${reward.teamSize}!</b>` : ''}</div>` : ''}
+    ${reward && reward.captured && reward.captured.length ? `<div class="reward">Captured: <b>${reward.captured.map((c) => c.line).join(', ')}</b> joined your collection!</div>` : ''}
     <div class="xp-list">${reports.map((r) => `<div class="xprow" style="--el:${elColor(r.line)}">
       <b>${r.formName}</b> <span>+${r.gained} XP</span> <span>Lv ${r.from}${r.to > r.from ? ` → <em>${r.to}</em>` : ''}</span>
       <div class="xp"><i style="width:${(r.xp / r.need) * 100}%"></i></div>
@@ -295,12 +305,19 @@ export function creatureSheet(app, c, onClose, entry = null) {
     ? `<span class="branch">${Object.values(f.paths).map((p) => `<b class="${p.name === formName ? 'cur' : ''}">${p.name}</b>`).join(' / ')}</span>`
     : `<b class="${f.name === formName ? 'cur' : ''}">${f.name}</b>`)).join(' → ');
   const known = knownAbilities(inst);
-  const eq = c ? equipped(c) : [];
+  const eq = [st.auto];
   const form = currentForm(inst);
-  const passive = form.passive || line.passive, special = form.special || line.special;
+  const passive = form.passive || line.passive;
+  const skill = form.skill || line.skill, ult = form.ult || line.ult;
+  const bigCard = (id, lv) => {
+    const cd = CARDS[id], locked = c && c.level < lv;
+    return `<div class="bigcard ${cd.kind} ${locked ? 'locked' : ''}">${cardIcon(id, { size: 52, dim: locked })}
+      <div><b>${cd.name}</b> <small>${cd.kind === 'ult' ? 'Ultimate' : 'Skill'} card · ${SHAPE_LABEL[cd.shape]} · ${cd.cost} energy</small>
+      <span>${cd.desc}</span>${locked ? `<em>Unlocks at Lv ${lv}</em>` : ''}</div></div>`;
+  };
   const statRow = (k, label, v, fmt = (x) => Math.round(x)) => `<div class="srow"><span>${label}</span><div class="sbar"><i style="width:${Math.min(1, v / STAT_MAX[k]) * 100}%"></i></div><b>${fmt(v)}</b></div>`;
   const nx = c ? nextEvolution(c) : null;
-  const upcoming = [['Ability 2', u.a2], ['Passive', u.passive], ['Element move', u.a3], ['Special', u.special]].filter(([, lv]) => c && c.level < lv)[0];
+  const upcoming = [['a second auto ability', u.a2], ['Passive', u.passive], ['the element move', u.a3], ['Ultimate card', u.special]].filter(([, lv]) => c && c.level < lv)[0];
   const lockedAt = (lv) => (!c || c.level >= lv ? '' : `<em>Unlocks at Lv ${lv}</em>`);
   const el = h(`<div class="modal sheet-modal"><div class="panel sheet" style="--el:${ELEMENTS[line.element[0]].color}">
     <button class="close">✕</button>
@@ -314,13 +331,14 @@ export function creatureSheet(app, c, onClose, entry = null) {
       <h3>Stats ${c ? `at Lv ${c.level}` : `at Lv ${PACING.maxLevel}`}</h3>
       <div class="stat-grid">${statRow('hp', 'HP', st.hp)}${statRow('atk', 'Attack', st.atk)}${statRow('aspd', 'Attack speed', st.aspd, (x) => x.toFixed(2))}
         ${statRow('range', 'Range', st.range)}${statRow('armor', 'Armor', st.armor)}${statRow('move', 'Move speed', st.move, (x) => x.toFixed(2))}</div>
-      <h3>Abilities ${c ? '<small>tick 2 to equip</small>' : ''}</h3>
+      <h3>Cards <small>played from your shared energy in battle</small></h3>
+      <div class="bigcards">${bigCard(skill, 1)}${bigCard(ult, u.special)}</div>
+      <h3>Automatic ability ${c ? '<small>pick the one it uses on its own</small>' : ''}</h3>
       <div class="ab-list">${known.map((a) => `<label class="ab ${a.known || !c ? '' : 'locked'} ${eq.includes(a.id) ? 'on' : ''}">
-          ${c && a.known ? `<input type="checkbox" data-id="${a.id}" ${eq.includes(a.id) ? 'checked' : ''}>` : ''}
+          ${c && a.known ? `<input type="radio" name="auto" data-id="${a.id}" ${eq.includes(a.id) ? 'checked' : ''}>` : ''}
           <b>${ABILITY_NAMES[a.id]}</b>${a.id === ELEMENT_MOVE[line.element[0]] ? ' <small>element move</small>' : ''}
           <span>${ABILITY_DESC[a.id] || ''}</span>${a.known || !c ? '' : `<em>Unlocks at Lv ${a.at}</em>`}</label>`).join('')}
         <div class="ab fixed ${lockedAt(u.passive) ? 'locked' : ''}"><b>Passive: ${ABILITY_NAMES[passive]}</b><span>${ABILITY_DESC[passive] || ''}</span>${lockedAt(u.passive)}</div>
-        <div class="ab fixed special ${lockedAt(u.special) ? 'locked' : ''}"><b>Special: ${ABILITY_NAMES[special]}</b><span>${ABILITY_DESC[special] || ''}</span>${lockedAt(u.special)}</div>
       </div>
       ${c ? `<p class="small next">${upcoming ? `Next unlock: <b>${upcoming[0]}</b> at Lv ${upcoming[1]}. ` : ''}${nx ? `Evolves at Lv ${nx.level}${nx.paths ? ' (choose a path)' : ` into ${nx.name}`}.` : 'Final form.'}</p>` : ''}
     </div></div></div>`);
@@ -329,11 +347,8 @@ export function creatureSheet(app, c, onClose, entry = null) {
   const close = () => { dispose(); el.remove(); if (onClose) onClose(); };
   el.querySelector('.close').onclick = close;
   el.addEventListener('click', (ev) => { if (ev.target === el) close(); });
-  el.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.onchange = () => {
-    let ids = [...el.querySelectorAll('input[type=checkbox]:checked')].map((x) => x.dataset.id);
-    if (ids.length > 2) { cb.checked = false; ids = ids.filter((x) => x !== cb.dataset.id); }
-    if (ids.length < 1) { cb.checked = true; return; }
-    P.setEquipped(s, c.uid, ids); app.persist();
+  el.querySelectorAll('input[type=radio]').forEach((cb) => cb.onchange = () => {
+    P.setEquipped(s, c.uid, [cb.dataset.id]); app.persist();
     el.querySelectorAll('label.ab').forEach((lb) => lb.classList.toggle('on', !!lb.querySelector('input:checked')));
   });
 }

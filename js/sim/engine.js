@@ -1,20 +1,23 @@
 // Real-time battle engine, ported from sim/engine.py (same rules and numbers), plus an event
 // queue the renderer reads to animate what happened. Team 0 = player, team 1 = opponent.
 import * as hex from './hex.js';
-import { ABILITIES, TRAINER, aimInfo } from './abilities.js';
+import { ABILITIES } from './abilities.js';
+import { CARDS, cardTiles, aimProblem } from './cards.js';
 import { activeDuos, combineMods } from './synergies.js';
 import { placement } from './maps.js';
 
 export const DT = 0.1;
-const ENERGY_MAX = 100, SPECIAL_MAX = 100, ABILITY_COST = 50, ABILITY_CD = 2.5;
-const ENERGY_PER_ATTACK = 10, ENERGY_PER_HIT_TAKEN = 3, ENERGY_PER_KILL = 40, SPECIAL_PER_KILL = 25;
-const SPECIAL_SHARE = 0.3, SPECIAL_PASSIVE = 1.5;
-export const TRAINER_REGEN = 0.5, TRAINER_PER_KILL = 1, TRAINER_CAP = 10;
+const ENERGY_MAX = 100, ABILITY_COST = 50, ABILITY_CD = 2.5;
+const ENERGY_PER_ATTACK = 10, ENERGY_PER_HIT_TAKEN = 3, ENERGY_PER_KILL = 40;
+// shared team energy for ability cards (Clash Royale style)
+export const ENERGY_CAP = 10, ENERGY_START = 5, ENERGY_REGEN = 0.36, TEAM_KILL_ENERGY = 0.5, HAND_SIZE = 4;
+const CARD_POWER = 3;   // card damage scale (creature HP is ×hpScale, so cards need to matter)
+export const OVERTIME_AT = 70;   // after this, damage ramps up (+25% every 10s) and healing is halved
 const DECISION_EVERY = 0.25, APM_GAP = 0.5;
 const STATUS_DUR = { burn: 3, soak: 3, chill: 3, freeze: 1.5, shock: 2, crack: 4 };
 const STATUS_ELEMENT = { burn: 'fire', soak: 'water', chill: 'ice', freeze: 'ice', shock: 'electric', crack: 'earth' };
 const BURN_DPS = 0.3, SHOCK_DRAIN = 20, CRACK_ARMOR = 20, THERMAL_SHOCK = 2.0, CONDUCT = 0.8;
-const SOLO_REACTION = 0.6, FALLBACK_ATK = 60, REVEAL_TIME = 1.5, SPECIAL_DMG = 0.75;
+const SOLO_REACTION = 0.6, FALLBACK_ATK = 60, REVEAL_TIME = 1.5;
 
 // Elemental marks a target can carry (checked in this order when a new element lands).
 const MARKS = [['freeze', 'ice'], ['chill', 'ice'], ['soak', 'water'], ['shock', 'electric'], ['burn', 'fire'], ['crack', 'earth']];
@@ -54,10 +57,11 @@ export class Unit {
     this.elements = def.element; this.role = def.role;
     this.baseHp = def.hp; this.maxHp = def.hp * hpScale; this.hp = this.maxHp * hpf;
     this.atk = def.atk; this.aspd = def.aspd; this.baseRange = def.range; this.baseArmor = def.armor; this.move = def.move;
-    this.abilities = [...def.abilities]; this.passive = def.passive; this.special = def.special;
+    this.abilities = [def.auto].filter(Boolean); this.passive = def.passive; this.cards = [...(def.cards || [])];
+    this.channelUntil = 0;
     this.pos = pos; this.startPos = pos;
     this.alive = true; this.eggUntil = null; this.rekindleUsed = false;
-    this.energy = 0; this.smeter = 0; this.specialReadySince = null;
+    this.energy = 0;
     this.nextAttack = 0; this.nextMove = 0;
     this.abReady = Object.fromEntries(this.abilities.map((a) => [a, 0]));
     this.status = {}; this.buffs = [];
@@ -73,7 +77,7 @@ export class Unit {
 
 export class Battle {
   constructor({ teamA, teamB, map, policyA, policyB, kitA, kitB, hpScale = 5, seed = 1, maxTime = 240, posA = null,
-                boonsA = [], boonsB = [] }) {
+                boonsA = [], boonsB = [], trainerA = [], trainerB = [], wild = false }) {
     this.rng = mulberry32(seed);
     this.mods = [combineMods(boonsA), combineMods(boonsB)];
     this.t = 0; this.maxTime = maxTime; this.hpScale = hpScale;
@@ -89,15 +93,15 @@ export class Battle {
     teamA.forEach((d, i) => this._addUnit(d, 0, spotsA[i]));
     teamB.forEach((d, i) => this._addUnit(d, 1, spotsB[i]));
     this.policies = [policyA, policyB];
-    this.kits = [kitA, kitB];
-    this.tenergy = [0, 0]; this.wasted = [0, 0];
+    this.wild = wild;
+    this.captured = [];
     this.reviveUsed = [false, false];
+    this.energyCap = ENERGY_CAP;
     this.lastAction = [-99, -99];
     this.nextDecision = 0;
     this.actions = [0, 0];
     this.reactions = {};
     this.firstKill = null;
-    this.castingSpecial = false;
     this.elemCount = [{}, {}];
     for (const u of this.units) for (const e of u.elements) this.elemCount[u.team][e] = (this.elemCount[u.team][e] || 0) + 1;
     this.duos = [0, 1].map((team) => new Set(activeDuos(this.units.filter((u) => u.team === team).map((u) => u.line)).map((d) => d.id)));
@@ -107,6 +111,21 @@ export class Battle {
       if (m.hp) { u.maxHp *= 1 + m.hp; u.hp = u.maxHp; }
       if (m.openingHaste) u.buffs.push(['aspd', m.openingHaste, 10]);
     }
+    this.energy = [0, 1].map((team) => ENERGY_START + (this.mods[team].startEnergy || 0));
+    this.casting = [];          // cards being cast: {team, entry, aim, at, tiles}
+    this.usedOnce = [new Set(), new Set()];
+    const trainer = [trainerA, trainerB];
+    this.decks = [0, 1].map((team) => {
+      const mine = this.units.filter((u) => u.team === team);
+      const entries = [];
+      // interleave creatures so the rotation cycles through the whole team
+      const maxCards = Math.max(0, ...mine.map((u) => u.cards.length));
+      for (let i = 0; i < maxCards; i++) for (const u of mine) if (u.cards[i]) entries.push({ key: `${u.uid}:${u.cards[i]}`, card: u.cards[i], uid: u.uid });
+      for (const c of trainer[team]) entries.push({ key: `t${team}:${c}`, card: c, uid: null });
+      return entries;
+    });
+    this.hands = [[], []];
+    for (const team of [0, 1]) this._refill(team);
     this.over = false; this.winner = null; this.timeout = false;
     this.paused = false;
     this.pending = [[], []];      // manual actions queued by the human player
@@ -196,11 +215,11 @@ export class Battle {
   // ---------- effects ----------
   gainEnergy(u, amount) {
     u.energy = Math.min(ENERGY_MAX, u.energy + amount);
-    if (u.special) u.smeter = Math.min(SPECIAL_MAX, u.smeter + SPECIAL_SHARE * amount * (1 + (this.mods[u.team].specialRate || 0)));
   }
   deal(src, tgt, amount, element, { trueDmg = false, hit = true, reaction = null, cat = null } = {}) {
     if (!tgt.active) return false;
     cat = cat || (hit ? this.cat : 'dot');
+    if (this.cardCast && cat !== 'combo') amount *= CARD_POWER;
     if (src) {
       amount *= 1 + this.buffSum(src, 'dmg') + (this.mods[src.team].dmgElement[element] || 0);
       if (src.passive === 'kindling' && this.has(tgt, 'burn')) amount *= 1.1;
@@ -212,9 +231,9 @@ export class Battle {
           && (this.has(tgt, 'shock') || this.has(tgt, 'chill') || this.has(tgt, 'freeze'))) amount *= 1.3;
       src.revealedUntil = this.t + REVEAL_TIME;
     }
-    if (this.castingSpecial && cat !== 'combo') amount *= SPECIAL_DMG;
     if (!trueDmg) amount *= 100 / (100 + this.armor(tgt));
     amount *= Math.max(1 + this.buffSum(tgt, 'taken'), 0.1);
+    if (this.t > OVERTIME_AT) amount *= 1 + 0.025 * (this.t - OVERTIME_AT);
     let absorbed = 0;
     if (tgt.shield > 0 && tgt.shieldUntil > this.t) { absorbed = Math.min(tgt.shield, amount); tgt.shield -= absorbed; amount -= absorbed; }
     const dealt = Math.min(amount, Math.max(tgt.hp, 0));
@@ -247,8 +266,7 @@ export class Battle {
     if (src && src.team !== tgt.team) {
       src.kills++;
       this.gainEnergy(src, ENERGY_PER_KILL);
-      if (src.special) src.smeter = Math.min(SPECIAL_MAX, src.smeter + SPECIAL_PER_KILL);
-      this.addTrainerEnergy(src.team, TRAINER_PER_KILL);
+      this.addEnergy(src.team, TEAM_KILL_ENERGY);
       if (this.firstKill === null) this.firstKill = src.team;
     }
   }
@@ -257,6 +275,7 @@ export class Battle {
     let amt = frac * tgt.baseHp;
     if (src && src.passive === 'overgrowth' && this.tile(tgt.pos) === 'brush') amt *= 1.3;
     if (this.hasDuo(tgt.team, 'tidal_bloom')) amt *= 1.3;
+    if (this.t > OVERTIME_AT) amt *= 0.5;
     const before = tgt.hp;
     tgt.hp = Math.min(tgt.maxHp, tgt.hp + amt);
     if (src) src.stats.healDone += tgt.hp - before;
@@ -286,14 +305,17 @@ export class Battle {
     const t = this.t, st = tgt.status;
     const el = STATUS_ELEMENT[status];
     dur = this._dur(src, status, dur);
-    const set = (name, extra = {}) => { st[name] = { until: t + dur, src, ...extra }; this.emit({ type: 'status', unit: tgt, status: name, dur }); };
+    const set = (name, extra = {}) => {
+      if (name === 'freeze') { if (t < (tgt.freezeImmune || 0)) return; tgt.freezeImmune = t + dur + 2.5; }   // no freeze lock
+      st[name] = { until: t + dur, src, ...extra }; this.emit({ type: 'status', unit: tgt, status: name, dur });
+    };
     if (!el) { set(status); return; }   // stun, root, taunt, invis, regen, steamed, brittle
     // immunities
     if (status === 'burn' && tgt.elements.includes('fire') && !src) return;
     if (status === 'soak' && tgt.elements.includes('water')) return;
     if (status === 'shock' && (tgt.passive === 'grounded' || tgt.elements.includes('earth'))) return;
     if (status === 'shock' && !src && tgt.elements.includes('electric')) return;
-    if (status === 'shock') { tgt.energy = Math.max(0, tgt.energy - SHOCK_DRAIN); tgt.smeter = Math.max(0, tgt.smeter - SHOCK_DRAIN / 2); }
+    if (status === 'shock') tgt.energy = Math.max(0, tgt.energy - SHOCK_DRAIN);
     // a different element's mark on the target detonates a combo
     for (const [name, mark] of MARKS) {
       if (mark === el || !this.has(tgt, name)) continue;
@@ -323,7 +345,7 @@ export class Battle {
       if (els.some((e) => (this.elemCount[src.team][e] || 0) >= 3)) power *= 1.25;
       if (name === 'Thermal Shock' && this.hasDuo(src.team, 'frostfire')) power *= 1.5;
       src.stats.combos++;
-      if (chain >= 3) this.addTrainerEnergy(src.team, 1);
+      if (chain >= 3) this.addEnergy(src.team, 0.5);
     }
     this.reactions[name] = (this.reactions[name] || 0) + 1;
     this.emit({ type: 'reaction', name, unit: tgt, chain });
@@ -333,7 +355,10 @@ export class Battle {
     const hit = (u, mult, element) => this.deal(src, u, mult * atk, element, { trueDmg: true, hit: false, reaction: name, cat: 'combo' });
     const near = (r) => this.teamAlive(tgt.team).filter((e) => e !== tgt && hex.dist(e.pos, tgt.pos) <= r);
     switch (name) {
-      case 'Flash Freeze': tgt.status.freeze = { until: t + 2, src }; this.emit({ type: 'status', unit: tgt, status: 'freeze', dur: 2 }); hit(tgt, 0.4, 'ice'); break;
+      case 'Flash Freeze':
+        if (t >= (tgt.freezeImmune || 0)) { tgt.status.freeze = { until: t + 2, src }; tgt.freezeImmune = t + 4.5; this.emit({ type: 'status', unit: tgt, status: 'freeze', dur: 2 }); }
+        hit(tgt, 0.4, 'ice');
+        break;
       case 'Conduct':
         for (const e of [tgt, ...this.teamAlive(tgt.team).filter((x) => x !== tgt && this.has(x, 'soak'))]) {
           delete e.status.soak;
@@ -391,41 +416,96 @@ export class Battle {
       .sort((a, b) => hex.dist(a, u.startPos) - hex.dist(b, u.startPos));
     if (!spots.length) return;
     this.reviveUsed[u.team] = true;
-    Object.assign(u, { alive: true, hp: frac * u.maxHp, status: {}, buffs: [], energy: 0, smeter: 0, specialReadySince: null, target: null, pos: spots[0] });
+    Object.assign(u, { alive: true, hp: frac * u.maxHp, status: {}, buffs: [], energy: 0, target: null, pos: spots[0] });
     this.occ.set(hex.key(u.pos), u);
     this.emit({ type: 'revive', unit: u });
   }
-  addTrainerEnergy(team, amount) {
-    let e = this.tenergy[team] + amount;
-    if (e > TRAINER_CAP) { this.wasted[team] += e - TRAINER_CAP; e = TRAINER_CAP; }
-    this.tenergy[team] = e;
+  addEnergy(team, amount) { this.energy[team] = Math.min(this.energyCap, this.energy[team] + amount); }
+  /** Push an enemy one row toward its own back line (Tidal Wave). */
+  pushRows(u, dir) {
+    const cells = hex.neighbors(u.pos).filter((p) => p[1] === u.pos[1] + dir && this.free(p));
+    if (cells.length) this.moveTo(u, cells[0], 'knock');
+  }
+  capture(u) {
+    u.alive = false; u.captured = true; u.hp = Math.max(u.hp, 1);
+    this.occ.delete(hex.key(u.pos));
+    this.captured.push(u);
+    this.emit({ type: 'captured', unit: u });
   }
 
-  // ---------- player actions ----------
-  readySpecials(team) { return this.teamAlive(team).filter((u) => u.special && u.smeter >= SPECIAL_MAX && !this._disabled(u)); }
-  specialValue(u) { return ABILITIES[u.special].value(this, u); }
-  castSpecial(u, info) {
-    this.castingSpecial = true; this.cat = 'special';
-    this.emit({ type: 'cast', unit: u, ability: u.special, special: true, info });
-    ABILITIES[u.special].cast(this, u, info);
-    this.castingSpecial = false; this.cat = 'attack';
-    u.smeter = 0; u.specialReadySince = null; u.specials++;
+  // ---------- ability cards ----------
+  /** A card can be in the hand if its creature is alive (trainer cards always, once-cards until used). */
+  _eligible(team, entry) {
+    if (CARDS[entry.card].once && this.usedOnce[team].has(entry.card)) return false;
+    if (entry.uid === null) return true;
+    const u = this.units.find((x) => x.uid === entry.uid);
+    return u && u.active;
   }
-  trainerOptions(team) {
-    const out = {};
-    for (const ab of this.kits[team]) {
-      const d = TRAINER[ab];
-      if (this.tenergy[team] >= d.cost) { const targets = d.valid(this, team); if (targets.length) out[ab] = targets; }
+  _refill(team) {
+    const hand = this.hands[team].filter((e) => this._eligible(team, e));
+    const deck = this.decks[team];
+    for (const e of [...deck]) {
+      if (hand.length >= HAND_SIZE) break;
+      if (hand.includes(e) || !this._eligible(team, e)) continue;
+      hand.push(e);
     }
-    return out;
+    this.hands[team] = hand;
   }
-  useTrainer(team, ab, target) {
-    const d = TRAINER[ab];
-    this.tenergy[team] -= d.cost;
-    d.use(this, team, target);
-    this.emit({ type: 'trainer', team, ability: ab, unit: target || null });
+  /** The next card that will enter the hand (Clash Royale "Next:"). */
+  nextCard(team) {
+    const hand = this.hands[team];
+    return this.decks[team].find((e) => !hand.includes(e) && this._eligible(team, e)) || null;
   }
-  /** Human input: queue a Special or trainer ability; it fires on the next decision tick. */
+  caster(entry) { return entry.uid === null ? null : this.units.find((x) => x.uid === entry.uid); }
+  /** Why a card can't be played right now (null = it can). Energy is checked separately. */
+  cardProblem(team, entry, aim) {
+    if (!this.hands[team].includes(entry)) return 'Not in hand';
+    const u = this.caster(entry);
+    if (entry.uid !== null && (!u || !u.active)) return 'Its creature has fallen';
+    if (u && (this._disabled(u) || this.t < u.channelUntil)) return `${u.name} is busy`;
+    return aimProblem(this, u, entry.card, aim, team);
+  }
+  playCard(team, key, aim) {
+    const entry = this.hands[team].find((e) => e.key === key);
+    if (!entry) return false;
+    const c = CARDS[entry.card];
+    if (this.energy[team] < c.cost || this.cardProblem(team, entry, aim)) return false;
+    const u = this.caster(entry);
+    this.energy[team] -= c.cost;
+    if (c.once) this.usedOnce[team].add(entry.card);
+    const tiles = cardTiles(this, u, entry.card, aim, team);
+    this.casting.push({ team, entry, aim, at: this.t + c.castTime, tiles });
+    if (u) { u.channelUntil = this.t + c.castTime; u.castDur = c.castTime; }
+    this.emit({ type: 'castStart', team, card: entry.card, unit: u, aim, tiles, dur: c.castTime, key });
+    // rotate: the card goes to the back of the deck, the next one fills the hand
+    this.hands[team] = this.hands[team].filter((e) => e !== entry);
+    this.decks[team] = [...this.decks[team].filter((e) => e !== entry), entry];
+    this._refill(team);
+    this.actions[team]++;
+    return true;
+  }
+  _resolveCasts() {
+    const due = this.casting.filter((c) => c.at <= this.t);
+    if (!due.length) return;
+    this.casting = this.casting.filter((c) => c.at > this.t);
+    for (const k of due) {
+      const c = CARDS[k.entry.card], u = this.caster(k.entry);
+      if (k.entry.uid !== null && (!u || !u.active || this._disabled(u))) {   // stunned or frozen mid-cast
+        this.emit({ type: 'interrupted', team: k.team, card: k.entry.card, unit: u });
+        continue;
+      }
+      const tiles = c.origin === 'map' || c.shape === 'single' ? k.tiles : cardTiles(this, u, k.entry.card, k.aim, k.team);
+      this.cat = c.kind === 'ult' ? 'special' : 'ability';
+      if (u) { u.casts++; if (c.kind === 'ult') u.specials++; }
+      this.emit({ type: 'cast', unit: u, team: k.team, ability: k.entry.card, special: c.kind === 'ult', card: true });
+      this.cardCast = true;
+      c.resolve(this, u || k.team, k.aim, tiles);
+      this.cardCast = false;
+      this.cat = 'attack';
+      this.emit({ type: 'castEnd', team: k.team, key: k.entry.key });
+    }
+  }
+  /** Human input: play a card (it fires on the next decision tick). */
   request(team, action) { this.pending[team].push(action); }
 
   // ---------- simulation ----------
@@ -434,6 +514,12 @@ export class Battle {
     const t = this.t;
     if (t >= u.burnTick) {
       u.burnTick = t + 0.5;
+      if (this.has(u, 'storm')) {   // Storm Leap: shocks everything around it
+        for (const e of this.enemies(u)) if (hex.dist(u.pos, e.pos) <= 1) {
+          this.emit({ type: 'chain', unit: u, from: u, target: e });
+          this.deal(u, e, 0.35 * u.atk, 'electric', { cat: 'special' }); this.apply(u, e, 'shock');
+        }
+      }
       const b = u.status.burn;
       if (b && b.until > t) this.deal(b.src, u, BURN_DPS * 0.5 * this._srcAtk(b.src), 'fire', { trueDmg: true, hit: false });
       const r = u.status.regen;
@@ -488,12 +574,16 @@ export class Battle {
     if (u.chainUntil > this.t) {
       const extra = u.chainCount || 1;
       const others = this.enemies(u).filter((e) => e !== tgt && hex.dist(e.pos, tgt.pos) <= 1).slice(0, extra);
-      for (const o of others) { this.emit({ type: 'chain', unit: u, from: tgt, target: o }); this.deal(u, o, 0.6 * u.atk, 'electric'); }
+      for (const o of others) {
+        this.emit({ type: 'chain', unit: u, from: tgt, target: o });
+        this.deal(u, o, 0.6 * u.atk, 'electric');
+        if (u.chainShock && o.active) this.apply(u, o, 'shock');
+      }
     }
   }
   _act(u) {
     const t = this.t;
-    if (this._disabled(u)) return;
+    if (this._disabled(u) || t < u.channelUntil) return;
     let best = null;
     for (const ab of u.abilities) {
       if (u.abReady[ab] <= t && u.energy >= ABILITY_COST) {
@@ -526,28 +616,12 @@ export class Battle {
     const queued = this.pending[team];
     while (queued.length) {
       const a = queued.shift();
-      if (a.kind === 'special') {
-        const u = a.unit;
-        if (u.active && u.special && u.smeter >= SPECIAL_MAX && !this._disabled(u)) {
-          const info = a.aim ? aimInfo(this, u, a.aim) : this.specialValue(u)[1];
-          if (info || !a.aim) { this.castSpecial(u, info); return true; }
-          this.emit({ type: 'invalidAim', unit: u });
-        }
-      } else if (a.kind === 'trainer') {
-        const opts = this.trainerOptions(team)[a.ability];
-        if (opts) {
-          const target = a.target === undefined ? opts[0] : (opts.includes(a.target) ? a.target : null);
-          if (target !== null || opts[0] === null) { this.useTrainer(team, a.ability, target); return true; }
-        }
-      }
+      if (a.kind === 'card' && this.playCard(team, a.key, a.aim)) return true;
     }
     const pol = this.policies[team];
     if (!pol) return false;
     const action = pol.decide(this, team);
-    if (!action) return false;
-    const [kind, x, y] = action;
-    if (kind === 'special') this.castSpecial(x, y); else this.useTrainer(team, x, y);
-    return true;
+    return action ? this.playCard(team, action.key, action.aim) : false;
   }
   _teamHp(team) {
     const us = this.units.filter((u) => u.team === team);
@@ -557,21 +631,20 @@ export class Battle {
     if (this.over) return;
     this.t += DT;
     const t = this.t;
+    if (!this.overtime && t >= OVERTIME_AT) { this.overtime = true; this.emit({ type: 'overtime' }); }
     if (!this.eventDone && t >= this.map.eventTime) {
       this.eventDone = true;
       this.emit({ type: 'mapEvent', name: this.map.eventName });
       this.map.event(this);
     }
-    for (const team of [0, 1]) this.addTrainerEnergy(team, TRAINER_REGEN * DT * (1 + (this.mods[team].trainerRegen || 0)));
+    for (const team of [0, 1]) this.addEnergy(team, ENERGY_REGEN * DT * (1 + (this.mods[team].energyRate || 0)));
+    this._resolveCasts();
     for (const u of this.units) {
       if (u.eggUntil !== null && u.alive && t >= u.eggUntil) { u.eggUntil = null; u.hp = 0.25 * u.maxHp; this.emit({ type: 'revive', unit: u }); }
       if (!u.active) continue;
-      if (u.special) {
-        u.smeter = Math.min(SPECIAL_MAX, u.smeter + SPECIAL_PASSIVE * DT * (1 + (this.mods[u.team].specialRate || 0)));
-        if (u.smeter >= SPECIAL_MAX && u.specialReadySince === null) u.specialReadySince = t;
-      }
       this._tickStatuses(u);
     }
+    for (const team of [0, 1]) if (this.hands[team].some((e) => !this._eligible(team, e)) || this.hands[team].length < HAND_SIZE) this._refill(team);
     if (t >= this.nextDecision) {
       this.nextDecision = t + DECISION_EVERY;
       for (const team of [0, 1]) if (t - this.lastAction[team] >= APM_GAP && this._decide(team)) {
